@@ -12,11 +12,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .att_model import pack_wrapper, AttModel
-from models.biobert_embedding.biobert_embedding.embedding import BiobertEmbedding
+# from models.biobert_embedding.biobert_embedding.embedding import BiobertEmbedding
 
-import transformers
+
 import os
-import sentencepiece as spm
+
 
 
 def clones(module, N):
@@ -248,122 +248,10 @@ class PositionwiseFeedForward(nn.Module):
         return self.w_2(self.dropout(F.relu(self.w_1(x))))
 
 
-# newly implemented
-class PretrainedEmbeddings:
-    GLOVE_UNK = '<unk>'
-    INDEX_PAD = 0
-    INDEX_START = 0
-    INDEX_UNKNOWN = 18
-    INDEX_EOS = 0
-
-    @classmethod
-    def glove_load_embeddings(cls, args, R2GenTokenizer):
-        """
-        Load pre-trained word embedding.
-        :param args: Arguments containing a path to pre-trained word embeddings
-        :return: A tensor of pre-trained word embeddings
-        """
-        f, embeddings = None, None
-        # word_idxs = {'__PAD__': args.pad_idx, '__START__': args.bos_idx,  '__EOS__': args.eos_idx, '<unk>': cls.INDEX_UNKNOWN}
-        word_idxs = R2GenTokenizer.token2idx
-        try:
-            if args.glove_path.endswith('.gz'):
-                f = gzip.open(args.glove_path, 'rt', encoding='utf-8')
-            else:
-                f = open(args.glove_path, encoding='utf-8')
-
-            header = f.readline().split(' ')  # print result ['4299', '512\n']
-            num = int(header[0])
-            # dim = int(header[1])
-            dim = args.d_model
-            embeddings = np.zeros((len(word_idxs) + 1, dim), dtype='float32')
-
-            # random initialise embedding for eos, pad, bos
-            for idx in (args.bos_idx, args.eos_idx, args.pad_idx):
-                embeddings[idx] = np.random.uniform(low=-1, high=1, size=dim)
-
-            count = 0  # record how many words in R2Gen's vocab has pretrained embedding in glove-mimic
-            for line in f:
-                entry = line.strip().split(' ')  # list of length 513, first element is token
-                embed = np.array(list(map(lambda v: float(v), entry[1:])), dtype='float32')
-
-                if entry[0] in word_idxs:
-                    embeddings[word_idxs[entry[0]]] = embed
-                    count += 1
-
-            for i in range(len(word_idxs) + 1):
-                if embeddings[i].all() == np.zeros((1, dim)).all():
-                    # print(R2GenTokenizer.idx2token[i])
-                    embeddings[i] = embeddings[word_idxs['<unk>']]
-            embeddings = torch.tensor(embeddings)
-        finally:
-            if f is not None:
-                f.close()
-        print('There are', count, 'words in R2Gen\'s vocab that has pretrained embedding in glove-mimic.')
-        return embeddings, word_idxs  # embeddings shape 4303,512
-
-    @classmethod
-    def biobert_load_embeddings(cls, args, R2GenTokenizer):
-        biobert = BiobertEmbedding()
-        biobert.word_vector('well-defined')
-
-        word2idx = R2GenTokenizer.token2idx
-        dim = args.d_model
-        embeddings = np.zeros((len(word2idx) + 1, dim), dtype='float32')
-        for idx in R2GenTokenizer.idx2token:
-            word_embed = biobert.word_vector(R2GenTokenizer.idx2token[idx])
-            # if len(word_embed) == 1:
-            #   embeddings[idx] = word_embed[0]
-            # if len(word_embed) > 1:
-            #   embeddings[idx] = sum(word_embed)/len(word_embed)
-            embeddings[idx] = sum(word_embed) / len(word_embed)
-        embeddings = torch.tensor(embeddings)
-        return embeddings
-
-    @classmethod
-    def bioalbert_load_embeddings(cls, args, R2GenTokenizer):
-        model_path = os.path.join(args.bioalbert_path, 'bioalbert_base_pubmed_pmc.bin')
-        config_path = os.path.join(args.bioalbert_path, 'albert_config.json')
-        bioalbert_model = transformers.AlbertForPreTraining.from_pretrained(model_path, config=config_path)
-        sp = spm.SentencePieceProcessor()
-        vocab_path = os.path.join(args.bioalbert_path, '30k-clean.model')
-        sp.load(vocab_path)
-        # #this vocab conversion is for bioalbert not R2Gen
-        # word_to_idx ={}
-        # idx_to_word = {}
-        # for idx in range(sp.get_piece_size()):
-        #   token = sp.id_to_piece(idx).strip('▁')
-        #   word_to_idx[token] = idx
-        #   idx_to_word[idx] = token
-
-        dim = args.d_model
-        embeddings = torch.zeros((len(R2GenTokenizer.idx2token) + 1, dim))
-        for idx, token in R2GenTokenizer.idx2token.items():
-            embeds = bioalbert_model.albert.embeddings.word_embeddings((torch.tensor(sp.encode(token))))  # shape x,128
-            embeddings[idx] = torch.mean(embeds, dim=0)[0]  # shape tensor[128]
-        # embeddings = torch.tensor(embeddings)
-        return embeddings
-
-
 class Embeddings(nn.Module):
-    def __init__(self, d_model, vocab, args, R2GenTokenizer):
+    def __init__(self, d_model, vocab):
         super(Embeddings, self).__init__()
         self.lut = nn.Embedding(vocab, d_model)
-        if args.pretrained_LM == 'glove-mimic':
-            pretrained_embeddings, _ = PretrainedEmbeddings.glove_load_embeddings(args, R2GenTokenizer)
-            self.lut.weight.data.copy_(pretrained_embeddings)
-
-        elif args.pretrained_LM == 'biobert':
-            pretrained_embeddings = PretrainedEmbeddings.biobert_load_embeddings(args, R2GenTokenizer)
-            self.lut.weight.data.copy_(pretrained_embeddings)
-
-        elif args.pretrained_LM == 'none':
-            pass
-        elif args.pretrained_LM == 'bioalbert':
-            print(args.pretrained_LM)
-            pretrained_embeddings = PretrainedEmbeddings.bioalbert_load_embeddings(args, R2GenTokenizer)
-            self.lut.weight.data.copy_(pretrained_embeddings)
-
         self.d_model = d_model
 
     def forward(self, x):
@@ -460,7 +348,7 @@ class EncoderDecoder(AttModel):
                 DecoderLayer(self.d_model, c(attn), c(attn), c(ff), self.dropout, self.rm_num_slots, self.rm_d_model),
                 self.num_layers),
             lambda x: x,
-            nn.Sequential(Embeddings(self.d_model, tgt_vocab, args, self.tokenizer), c(position)),
+            nn.Sequential(Embeddings(self.d_model, tgt_vocab), c(position)),
             rm)
         for p in model.parameters():
             if p.dim() > 1:
