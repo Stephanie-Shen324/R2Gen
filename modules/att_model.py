@@ -82,19 +82,28 @@ class AttModel(CaptionModel):
 
         return fc_feats, att_feats, p_att_feats, att_masks
 
-    def get_logprobs_state(self, it, fc_feats, att_feats, p_att_feats, att_masks, state, output_logsoftmax=1):
+    def get_logprobs_state(self, it, fc_feats, att_feats, p_att_feats, att_masks, state, output_logsoftmax=1, is_Sampling = False):
+        # decode entry 1
         # 'it' contains a word index
         xt = self.embed(it)
+        # decode entry 1
+        if is_Sampling:
+            output, state, attention_score = self.core(xt, fc_feats, att_feats, p_att_feats, state, att_masks, is_Sampling)
+        else:
+            output, state = self.core(xt, fc_feats, att_feats, p_att_feats, state, att_masks, is_Sampling)
 
-        output, state = self.core(xt, fc_feats, att_feats, p_att_feats, state, att_masks)
         if output_logsoftmax:
             logprobs = F.log_softmax(self.logit(output), dim=1)
         else:
             logprobs = self.logit(output)
 
-        return logprobs, state
+        if is_Sampling:
+            return logprobs, state, attention_score
+        else:
+            return logprobs, state,
 
     def _sample_beam(self, fc_feats, att_feats, att_masks=None, opt={}):
+        # beam search entry
         beam_size = opt.get('beam_size', 10)
         group_size = opt.get('group_size', 1)
         sample_n = opt.get('sample_n', 10)
@@ -136,6 +145,7 @@ class AttModel(CaptionModel):
         return seq, seqLogprobs
 
     def _sample(self, fc_feats, att_feats, att_masks=None):
+        # decode stage entry
         opt = self.args.__dict__
         sample_method = opt.get('sample_method', 'greedy')
         beam_size = opt.get('beam_size', 1)
@@ -146,10 +156,12 @@ class AttModel(CaptionModel):
         decoding_constraint = opt.get('decoding_constraint', 0)
         block_trigrams = opt.get('block_trigrams', 0)
         if beam_size > 1 and sample_method in ['greedy', 'beam_search']:
+            # wont do this is beam size = 1
             return self._sample_beam(fc_feats, att_feats, att_masks, opt)
         if group_size > 1:
             return self._diverse_sample(fc_feats, att_feats, att_masks, opt)
 
+        # Greedy Algorithm
         batch_size = fc_feats.size(0)
         state = self.init_hidden(batch_size * sample_n)
 
@@ -165,12 +177,16 @@ class AttModel(CaptionModel):
 
         seq = fc_feats.new_full((batch_size * sample_n, self.max_seq_length), self.pad_idx, dtype=torch.long)
         seqLogprobs = fc_feats.new_zeros(batch_size * sample_n, self.max_seq_length, self.vocab_size + 1)
-        for t in range(self.max_seq_length + 1):
+
+
+        for t in range(self.max_seq_length + 1): # for each token to be generated
             if t == 0:  # input <bos>
                 it = fc_feats.new_full([batch_size * sample_n], self.bos_idx, dtype=torch.long)
 
-            logprobs, state = self.get_logprobs_state(it, p_fc_feats, p_att_feats, pp_att_feats, p_att_masks, state,
-                                                      output_logsoftmax=output_logsoftmax)
+            # greedy decoder entry
+            logprobs, state, attention_scores = self.get_logprobs_state(it, p_fc_feats, p_att_feats, pp_att_feats, p_att_masks, state,
+                                                      output_logsoftmax=output_logsoftmax, is_Sampling = True) # set as true
+
 
             if decoding_constraint and t > 0:
                 tmp = logprobs.new_zeros(logprobs.size())
@@ -208,6 +224,8 @@ class AttModel(CaptionModel):
             # sample the next word
             if t == self.max_seq_length:  # skip if we achieve maximum length
                 break
+
+            # decide the next token
             it, sampleLogprobs = self.sample_next_word(logprobs, sample_method, temperature)
 
             # stop when all finished
@@ -223,7 +241,9 @@ class AttModel(CaptionModel):
             if unfinished.sum() == 0:
                 break
 
-        return seq, seqLogprobs
+        # print(attention_scores.shape) # (batch_size = 16, num_heads = 8, num_seq = 61)
+
+        return seq, seqLogprobs, attention_scores
 
     def _diverse_sample(self, fc_feats, att_feats, att_masks=None, opt={}):
 

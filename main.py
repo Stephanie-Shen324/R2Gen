@@ -48,7 +48,7 @@ def parse_agrs():
 
     # Sample related
     parser.add_argument('--sample_method', type=str, default='beam_search', help='the sample methods to sample a report.')
-    parser.add_argument('--beam_size', type=int, default=3, help='the beam size when beam searching.')
+    parser.add_argument('--beam_size', type=int, default=1, help='the beam size when beam searching.')
     parser.add_argument('--temperature', type=float, default=1.0, help='the temperature when sampling.')
     parser.add_argument('--sample_n', type=int, default=1, help='the sample number per image.')
     parser.add_argument('--group_size', type=int, default=1, help='the group size.')

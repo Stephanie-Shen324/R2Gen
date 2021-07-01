@@ -31,7 +31,8 @@ class R2GenModel(nn.Module):
         if mode == 'train':
             output = self.encoder_decoder(fc_feats, att_feats, targets, mode='forward')
         elif mode == 'sample':
-            output, _ = self.encoder_decoder(fc_feats, att_feats, mode='sample')
+            output, _, attention_scores = self.encoder_decoder(fc_feats, att_feats, mode='sample')
+            return output, attention_scores
         else:
             raise ValueError
         return output
@@ -41,8 +42,11 @@ class R2GenModel(nn.Module):
         if mode == 'train':
             output = self.encoder_decoder(fc_feats, att_feats, targets, mode='forward')
         elif mode == 'sample':
-            output, _ = self.encoder_decoder(fc_feats, att_feats, mode='sample')
+            output, _, attention_scores = self.encoder_decoder(fc_feats, att_feats, mode='sample')
+            return output, attention_scores
         else:
             raise ValueError
         return output
+
+
 

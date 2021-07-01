@@ -5,6 +5,10 @@ import time
 import torch
 import pandas as pd
 from numpy import inf
+import numpy as np
+from tqdm import tqdm
+
+import json
 
 
 class BaseTrainer(object):
@@ -103,7 +107,7 @@ class BaseTrainer(object):
 
         if not os.path.exists(self.args.record_dir):
             os.makedirs(self.args.record_dir)
-        record_path = os.path.join(self.args.record_dir, self.args.dataset_name+'.csv')
+        record_path = os.path.join(self.args.record_dir, self.args.dataset_name + '.csv')
         if not os.path.exists(record_path):
             record_table = pd.DataFrame()
         else:
@@ -127,6 +131,7 @@ class BaseTrainer(object):
         return device, list_ids
 
     def _save_checkpoint(self, epoch, save_best=False):
+        # print('awfb',self.model)
         state = {
             'epoch': epoch,
             'state_dict': self.model.state_dict(),
@@ -176,6 +181,15 @@ class BaseTrainer(object):
             print('\t{:15s}: {}'.format(str(key), value))
 
 
+
+def save_files(save_dir,content,epoch,split,file_name):
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    file_path=os.path.join(save_dir, '{}_e{}_{}.json'.format(split, epoch,file_name))
+    json_refs = json.dumps(content)
+    with open(file_path,'w') as json_file:
+        json_file.write(json_refs)
+
 class Trainer(BaseTrainer):
     def __init__(self, model, criterion, metric_ftns, optimizer, args, lr_scheduler, train_dataloader, val_dataloader,
                  test_dataloader):
@@ -184,12 +198,26 @@ class Trainer(BaseTrainer):
         self.train_dataloader = train_dataloader
         self.val_dataloader = val_dataloader
         self.test_dataloader = test_dataloader
+        self.args = args
 
     def _train_epoch(self, epoch):
 
         train_loss = 0
         self.model.train()
-        for batch_idx, (images_id, images, reports_ids, reports_masks) in enumerate(self.train_dataloader):
+        for batch_idx, (images_id, images, reports_ids, reports_masks) in tqdm(enumerate(self.train_dataloader),
+                                                                               desc='Epoch %d - Training' % epoch,
+                                                                               unit='it',
+                                                                               total=len(self.train_dataloader)):
+
+            # image_id is a tuple of 16 items: each item like: 'CXR2949_IM-1348'
+            # images torch.Size([16, 2, 3, 224, 224])
+            # reports_ids torch.Size([16, 60]) various length
+            # reports_masks torch.Size([16, 60]) various length
+            if self.args.flip == True and self.args.dataset_name != 'mimic_cxr':  # mimic_cxr only input 1 image, but mimic_cxr_2images will have 2 images
+                if np.random.rand(1) > 0.5:
+                    images = torch.stack((images[:, 1], images[:, 0]), 1)
+            # stack dim is correct bc:
+            # torch.stack((images[:,0],images[:,1]), 1 ).all()==images.all()
             images, reports_ids, reports_masks = images.to(self.device), reports_ids.to(self.device), reports_masks.to(
                 self.device)
             output = self.model(images, reports_ids, mode='train')
@@ -199,37 +227,72 @@ class Trainer(BaseTrainer):
             loss.backward()
             torch.nn.utils.clip_grad_value_(self.model.parameters(), 0.1)
             self.optimizer.step()
+
         log = {'train_loss': train_loss / len(self.train_dataloader)}
 
         self.model.eval()
         with torch.no_grad():
+            gen_store = {}
             val_gts, val_res = [], []
-            for batch_idx, (images_id, images, reports_ids, reports_masks) in enumerate(self.val_dataloader):
+            for batch_idx, (images_ids, images, reports_ids, reports_masks) in tqdm(enumerate(self.val_dataloader),
+                                                                                   desc='Epoch %d - Validation' % epoch,
+                                                                                   unit='it',
+                                                                                   total=len(self.val_dataloader)):
                 images, reports_ids, reports_masks = images.to(self.device), reports_ids.to(
                     self.device), reports_masks.to(self.device)
-                output = self.model(images, mode='sample')
+                output, attention_scores = self.model(images, mode='sample')
                 reports = self.model.tokenizer.decode_batch(output.cpu().numpy())
                 ground_truths = self.model.tokenizer.decode_batch(reports_ids[:, 1:].cpu().numpy())
                 val_res.extend(reports)
                 val_gts.extend(ground_truths)
+
+                for image_index, images_id in enumerate(images_ids):
+                    candidate_attention_scores = attention_scores[image_index, : , 1:len(reports[image_index].split())+1]
+                    try:
+                        selected = torch.argmax(torch.Tensor([[torch.std(candidate)  for candidate in candidate_attention_scores]]))
+                        candidate_attention_score = candidate_attention_scores[selected].tolist()
+                      # print(candidate_attention_score)
+                    except:
+                        candidate_attention_score = [0]
+                    gen_store[images_id] = [reports[image_index], candidate_attention_score]
+
             val_met = self.metric_ftns({i: [gt] for i, gt in enumerate(val_gts)},
                                        {i: [re] for i, re in enumerate(val_res)})
             log.update(**{'val_' + k: v for k, v in val_met.items()})
+            save_files(self.args.record_dir, gen_store, epoch, 'val', 'gen')
 
         self.model.eval()
         with torch.no_grad():
+            gen_store = {}
             test_gts, test_res = [], []
-            for batch_idx, (images_id, images, reports_ids, reports_masks) in enumerate(self.test_dataloader):
+
+            for batch_idx, (images_ids, images, reports_ids, reports_masks) in tqdm(enumerate(self.test_dataloader),
+                                                                                   desc='Epoch %d - Testing' % epoch,
+                                                                                   unit='it',
+                                                                                   total=len(self.test_dataloader)):
                 images, reports_ids, reports_masks = images.to(self.device), reports_ids.to(
                     self.device), reports_masks.to(self.device)
-                output = self.model(images, mode='sample')
+                # decode entry
+                output, attention_scores = self.model(images, mode='sample')
                 reports = self.model.tokenizer.decode_batch(output.cpu().numpy())
                 ground_truths = self.model.tokenizer.decode_batch(reports_ids[:, 1:].cpu().numpy())
                 test_res.extend(reports)
                 test_gts.extend(ground_truths)
+
+                for image_index, images_id in enumerate(images_ids):
+                    candidate_attention_scores = attention_scores[image_index, : , 1:len(reports[image_index].split())+1]
+                    try:
+                        selected = torch.argmax(torch.Tensor([[torch.std(candidate)  for candidate in candidate_attention_scores]]))
+                        candidate_attention_score = candidate_attention_scores[selected].tolist()
+                      # print(candidate_attention_score)
+                    except:
+                        candidate_attention_score = [0]
+                    gen_store[images_id] = [reports[image_index], candidate_attention_score]
+
             test_met = self.metric_ftns({i: [gt] for i, gt in enumerate(test_gts)},
                                         {i: [re] for i, re in enumerate(test_res)})
             log.update(**{'test_' + k: v for k, v in test_met.items()})
+            save_files(self.args.record_dir, gen_store, epoch, 'test', 'gen')
 
         self.lr_scheduler.step()
 
