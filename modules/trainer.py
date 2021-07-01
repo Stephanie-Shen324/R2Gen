@@ -213,9 +213,7 @@ class Trainer(BaseTrainer):
             # images torch.Size([16, 2, 3, 224, 224])
             # reports_ids torch.Size([16, 60]) various length
             # reports_masks torch.Size([16, 60]) various length
-            if self.args.flip == True and self.args.dataset_name != 'mimic_cxr':  # mimic_cxr only input 1 image, but mimic_cxr_2images will have 2 images
-                if np.random.rand(1) > 0.5:
-                    images = torch.stack((images[:, 1], images[:, 0]), 1)
+            
             # stack dim is correct bc:
             # torch.stack((images[:,0],images[:,1]), 1 ).all()==images.all()
             images, reports_ids, reports_masks = images.to(self.device), reports_ids.to(self.device), reports_masks.to(
@@ -227,6 +225,7 @@ class Trainer(BaseTrainer):
             loss.backward()
             torch.nn.utils.clip_grad_value_(self.model.parameters(), 0.1)
             self.optimizer.step()
+            break
 
         log = {'train_loss': train_loss / len(self.train_dataloader)}
 
